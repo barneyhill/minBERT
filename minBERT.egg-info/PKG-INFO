@@ -1,0 +1,7 @@
+Metadata-Version: 2.1
+Name: minBERT
+Version: 0.0.1
+Summary: A PyTorch re-implementation of BERT
+Author: Andrej Karpathy
+License: MIT
+License-File: LICENSE

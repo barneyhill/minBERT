@@ -9,9 +9,9 @@ import torch
 from torch.utils.data import Dataset
 from torch.utils.data.dataloader import DataLoader
 
-from mingpt.model import GPT
-from mingpt.trainer import Trainer
-from mingpt.utils import set_seed, setup_logging, CfgNode as CN
+from minbert.model import BERT
+from minbert.trainer import Trainer
+from minbert.utils import set_seed, setup_logging, CfgNode as CN
 
 # -----------------------------------------------------------------------------
 
@@ -28,7 +28,7 @@ def get_config():
     C.data = CharDataset.get_default_config()
 
     # model
-    C.model = GPT.get_default_config()
+    C.model = BERT.get_default_config()
     C.model.model_type = 'gpt-mini'
 
     # trainer
@@ -48,12 +48,13 @@ class CharDataset(Dataset):
     def get_default_config():
         C = CN()
         C.block_size = 128
+        C.mask_prob = 0.15
         return C
 
     def __init__(self, config, data):
         self.config = config
 
-        chars = sorted(list(set(data)))
+        chars = sorted(list(set(data))) + ["[MASK]"] # + mask token
         data_size, vocab_size = len(data), len(chars)
         print('data has %d characters, %d unique.' % (data_size, vocab_size))
 
@@ -72,14 +73,21 @@ class CharDataset(Dataset):
         return len(self.data) - self.config.block_size
 
     def __getitem__(self, idx):
-        # grab a chunk of (block_size + 1) characters from the data
-        chunk = self.data[idx:idx + self.config.block_size + 1]
+        # grab a chunk of (block_size) characters from the data
+        chunk = self.data[idx:idx + self.config.block_size]
         # encode every character to an integer
-        dix = [self.stoi[s] for s in chunk]
-        # return as tensors
-        x = torch.tensor(dix[:-1], dtype=torch.long)
-        y = torch.tensor(dix[1:], dtype=torch.long)
-        return x, y
+        dix = torch.tensor([self.stoi[s] for s in chunk], dtype=torch.long)
+
+        n_pred = max(1, int(round(self.config.block_size*self.config.mask_prob)))
+
+        masked_idx = torch.randperm(self.config.block_size, dtype=torch.long, )[:n_pred]
+
+        mask = torch.zeros_like(dix)
+        mask[masked_idx] = dix[masked_idx]
+        
+        dix[masked_idx] = self.stoi["[MASK]"]
+
+        return dix, mask # Return batch + mask
 
 # -----------------------------------------------------------------------------
 
@@ -99,7 +107,7 @@ if __name__ == '__main__':
     # construct the model
     config.model.vocab_size = train_dataset.get_vocab_size()
     config.model.block_size = train_dataset.get_block_size()
-    model = GPT(config.model)
+    model = BERT(config.model)
 
     # construct the trainer object
     trainer = Trainer(config.trainer, model, train_dataset)
@@ -110,14 +118,14 @@ if __name__ == '__main__':
         if trainer.iter_num % 10 == 0:
             print(f"iter_dt {trainer.iter_dt * 1000:.2f}ms; iter {trainer.iter_num}: train loss {trainer.loss.item():.5f}")
 
-        if trainer.iter_num % 500 == 0:
+        if trainer.iter_num % 100 == 0:
             # evaluate both the train and test score
             model.eval()
             with torch.no_grad():
                 # sample from the model...
                 context = "O God, O God!"
                 x = torch.tensor([train_dataset.stoi[s] for s in context], dtype=torch.long)[None,...].to(trainer.device)
-                y = model.generate(x, 500, temperature=1.0, do_sample=True, top_k=10)[0]
+                y = model.generate(x, 500, mask_token=train_dataset.stoi["[MASK]"], temperature=1.0, do_sample=True, top_k=10)[0]
                 completion = ''.join([train_dataset.itos[int(i)] for i in y])
                 print(completion)
             # save the latest model
